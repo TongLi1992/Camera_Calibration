@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package calibration_grpc;
+
+option java_package = "edu.berkeley.cs.sdb.cellmate";
+option java_outer_classname = "CellmateProto";
+
+service CalibrationService{
+  rpc calibrate(Images) returns (CameraMatrix) {}
+}
+
+message Images {
+  repeated bytes image = 1;
+  string phoneModel = 2;
+}
+
+message CameraMatrix {
+  double fx = 1;
+  double fy = 2;
+  double cx = 3;
+  double cy = 4;
+}
