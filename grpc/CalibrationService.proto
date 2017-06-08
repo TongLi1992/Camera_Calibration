@@ -6,11 +6,11 @@ option java_package = "edu.berkeley.cs.sdb.cellmate";
 option java_outer_classname = "CellmateProto";
 
 service CalibrationService{
-  rpc calibrate(Images) returns (CameraMatrix) {}
+  rpc calibrate(stream Image) returns (CameraMatrix) {}
 }
 
-message Images {
-  repeated bytes image = 1;
+message Image {
+  bytes image = 1;
   string phoneModel = 2;
 }
 
@@ -19,4 +19,5 @@ message CameraMatrix {
   double fy = 2;
   double cx = 3;
   double cy = 4;
+  string resultMessage = 5;
 }

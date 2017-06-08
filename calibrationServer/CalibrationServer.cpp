@@ -5,16 +5,12 @@
 #include <ctime>
 #include <cstdio>
 
-#include <opencv2/core.hpp>
-#include <opencv2/core/utility.hpp>
-#include <opencv2/imgproc.hpp>
-#include <opencv2/calib3d.hpp>
-#include <opencv2/imgcodecs.hpp>
-#include <opencv2/videoio.hpp>
-#include <opencv2/highgui.hpp>
-
-CalibrationServer::CalibrationServer(int serverAddr, unsigned int maxClients) {
-  _serverAddress = std::to_string(serverAddr);
+#define BOARD_HEIGHT 9
+#define BOARD_WIDTH 6
+#define SQUARE_SIZE 0.025
+#define ASPECT_RATIO 1
+CalibrationServer::CalibrationServer(std::string serverAddr, unsigned int maxClients) {
+  _serverAddress = serverAddr;
   _maxClients = maxClients;
   _numClients = 0;
 }
@@ -45,101 +41,110 @@ void CalibrationServer::RunServer() {
 }
 
 grpc::Status CalibrationServer::calibrate(grpc::ServerContext *context,
-                       const calibration_grpc::Images *request,
+                       grpc::ServerReader<calibration_grpc::Image> *request,
                        calibration_grpc::CameraMatrix *response) {
   {
     std::lock_guard<std::mutex> lock(_mutex);
     if (this->_numClients >= this->_maxClients) {
-      response->set_foundname("Too many clients, server is busy");
-      return grpc::Status::OK;
+      return grpc::Status::CANCELLED;
     }
     this->_numClients++;
   }
 
-  vector<vector<Point2f> > imagePoints;
-  Mat cameraMatrix, distCoeffs;
-  Size imageSize;
-  for(int i = 0; i < request->image_size(); i++) {
-    std::vector<uchar> data(request->image(i).begin(), request->image(i).end());
+  std::vector<std::vector<cv::Point2f> > imagePoints;
+  cv::Mat cameraMatrix, distCoeffs;
+  cv::Size imageSize;
+  calibration_grpc::Image nextImage;
+  while(request->Read(&nextImage)){
+    std::vector<uchar> data(nextImage.image().begin(), nextImage.image().end());
     assert(data.size() > 0);
     bool copyData = false;
     cv::Mat view = imdecode(cv::Mat(data, copyData), cv::IMREAD_GRAYSCALE);
+    //imwrite("image"+std::to_string(i) +".jpg", view);
     imageSize = view.size();
     
     //find_pattern
-    vector<Point2f> pointBuf;
+    std::vector<cv::Point2f> pointBuf;
     bool found;
-    int chessBoardFlags = CALIB_CB_ADAPTIVE_THRESH | CALIB_CB_NORMALIZE_IMAGE;
-    chessBoardFlags |= CALIB_CB_FAST_CHECK;
-    found = findChessboardCorners( view, s.boardSize, pointBuf, chessBoardFlags);
+    int chessBoardFlags = cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE;
+    chessBoardFlags |= cv::CALIB_CB_FAST_CHECK;
+    found = findChessboardCorners( view, cv::Size(BOARD_WIDTH, BOARD_HEIGHT), pointBuf, chessBoardFlags);
     if ( found) {
-      cornerSubPix( viewGray, pointBuf, Size(11,11),
-        Size(-1,-1), TermCriteria( TermCriteria::EPS+TermCriteria::COUNT, 30, 0.1 ));
+      cornerSubPix( view, pointBuf, cv::Size(11,11),
+        cv::Size(-1,-1), cv::TermCriteria( cv::TermCriteria::EPS+cv::TermCriteria::COUNT, 30, 0.1 ));
       imagePoints.push_back(pointBuf);
     }
   }
+  /*std::cout<<"ImagePoints length is "<<imagePoints.size()<<std::endl;
+  for(int k = 0; k < imagePoints.size(); k++) {
+    std::cout<<"ImagePoint "<<k<<"  size is " <<imagePoints[k].size()<<"\n";
+    for(auto point: imagePoints[k]) {
+        std::cout<<point<<" ";
+    }
+    std::cout<<std::endl;
+  }*/
   runCalibrationAndSave(imageSize,  cameraMatrix, distCoeffs, imagePoints);
-  response.set_fx(cameraMatrix.at<double>(0,0));
-  response.set_fy(cameraMatrix.at<double>(1,1));
-  response.set_cx(cameraMatrix.at<double>(0,2));
-  response.set_cy(cameraMatrix.at<double>(1,2));
+  response->set_fx(cameraMatrix.at<double>(0,0));
+  response->set_fy(cameraMatrix.at<double>(1,1));
+  response->set_cx(cameraMatrix.at<double>(0,2));
+  response->set_cy(cameraMatrix.at<double>(1,2));
   this->_numClients--;  
   return grpc::Status::OK;
 }
 
-bool CalibrationServer::runCalibrationAndSave(Size imageSize, Mat& cameraMatrix, Mat& distCoeffs,
-                                          vector<vector<Point2f> > imagePoints) {
-  vector<Mat> rvecs, tvecs;
-  vector<float> reprojErrs;
+bool CalibrationServer::runCalibrationAndSave(cv::Size imageSize, cv::Mat& cameraMatrix, cv::Mat& distCoeffs,
+                                          std::vector<std::vector<cv::Point2f> > imagePoints) {
+    std::vector<cv::Mat> rvecs, tvecs;
+    std::vector<float> reprojErrs;
   double totalAvgErr = 0;
-  bool ok = runCalibration(s, imageSize, cameraMatrix, distCoeffs, imagePoints, rvecs, tvecs, reprojErrs,totalAvgErr);
-  cout << (ok ? "Calibration succeeded" : "Calibration failed")
-       << ". avg re projection error = " << totalAvgErr << endl;
+  bool ok = runCalibration(imageSize, cameraMatrix, distCoeffs, imagePoints, rvecs, tvecs, reprojErrs,totalAvgErr);
+  std::cout << (ok ? "Calibration succeeded" : "Calibration failed")
+       << ". avg re projection error = " << totalAvgErr << std::endl;
   std::cout<<"The cameraMatrix is :"<<cameraMatrix<<std::endl;
   return ok;
 }
 
-bool CalibrationServer::runCalibration( Settings& s, Size& imageSize, Mat& cameraMatrix, Mat& distCoeffs,
-                            vector<vector<Point2f> > imagePoints, vector<Mat>& rvecs, vector<Mat>& tvecs,
-                            vector<float>& reprojErrs,  double& totalAvgErr) {
-  cameraMatrix = Mat::eye(3, 3, CV_64F);
-  cameraMatrix.at<double>(0,0) = CalibrationServer::ASPECT_RATIO;
-  distCoeffs = Mat::zeros(8, 1, CV_64F);
-  vector<vector<Point3f> > objectPoints(1);
+bool CalibrationServer::runCalibration(cv::Size& imageSize, cv::Mat& cameraMatrix, cv::Mat& distCoeffs,
+                            std::vector<std::vector<cv::Point2f> > imagePoints, std::vector<cv::Mat>& rvecs, std::vector<cv::Mat>& tvecs,
+                            std::vector<float>& reprojErrs,  double& totalAvgErr) {
+  cameraMatrix = cv::Mat::eye(3, 3, CV_64F);
+  cameraMatrix.at<double>(0,0) = ASPECT_RATIO;
+  distCoeffs = cv::Mat::zeros(8, 1, CV_64F);
+  std::vector<std::vector<cv::Point3f> > objectPoints(1);
   calcBoardCornerPositions(objectPoints[0]);
   objectPoints.resize(imagePoints.size(),objectPoints[0]);
 
   //Find intrinsic and extrinsic camera parameters
   double rms;
-  rms = calibrateCamera(objectPoints, imagePoints, imageSize, cameraMatrix, distCoeffs, rvecs, tvecs,s.flag);
-  cout << "Re-projection error reported by calibrateCamera: "<< rms << endl;
+  rms = cv::calibrateCamera(objectPoints, imagePoints, imageSize, cameraMatrix, distCoeffs, rvecs, tvecs, cv::CALIB_FIX_K4|cv::CALIB_FIX_K5);
+  std::cout << "Re-projection error reported by calibrateCamera: "<< rms << std::endl;
   bool ok = checkRange(cameraMatrix) && checkRange(distCoeffs);
   totalAvgErr = computeReprojectionErrors(objectPoints, imagePoints, rvecs, tvecs, cameraMatrix,
-                                          distCoeffs, reprojErrs, s.useFisheye);
+                                          distCoeffs, reprojErrs);
   return ok;
 }
 
-void CalibrationServer::calcBoardCornerPositions(vector<Point3f>& corners) {
+void CalibrationServer::calcBoardCornerPositions(std::vector<cv::Point3f>& corners) {
   corners.clear();
   for( int i = 0; i < BOARD_HEIGHT; ++i ) {
     for( int j = 0; j < BOARD_WIDTH; ++j ) {
-      corners.push_back(Point3f(j*SQUARE_SIZE, i*SQUARE_SIZE, 0));
+      corners.push_back(cv::Point3f((float)j*SQUARE_SIZE,(float)i*SQUARE_SIZE, 0));
     }
   }
 }
             
-double CalibrationServer::computeReprojectionErrors( const vector<vector<Point3f> >& objectPoints,
-                                         const vector<vector<cv::Point2f> >& imagePoints,
-                                         const vector<cv::Mat>& rvecs, const vector<cv::Mat>& tvecs,
+double CalibrationServer::computeReprojectionErrors( const std::vector<std::vector<cv::Point3f> >& objectPoints,
+                                         const std::vector<std::vector<cv::Point2f> >& imagePoints,
+                                         const std::vector<cv::Mat>& rvecs, const std::vector<cv::Mat>& tvecs,
                                          const cv::Mat& cameraMatrix , const cv::Mat& distCoeffs,
-                                         vector<float>& perViewErrors) {
-  vector<cv::Point2f> imagePoints2;
+                                         std::vector<float>& perViewErrors) {
+    std::vector<cv::Point2f> imagePoints2;
   size_t totalPoints = 0;
   double totalErr = 0, err;
   perViewErrors.resize(objectPoints.size());
   for(size_t i = 0; i < objectPoints.size(); ++i ) {
     projectPoints(objectPoints[i], rvecs[i], tvecs[i], cameraMatrix, distCoeffs, imagePoints2);
-    err = norm(imagePoints[i], imagePoints2, NORM_L2);
+    err = norm(imagePoints[i], imagePoints2, cv::NORM_L2);
     size_t n = objectPoints[i].size();
     perViewErrors[i] = (float) std::sqrt(err*err/n);
     totalErr        += err*err;

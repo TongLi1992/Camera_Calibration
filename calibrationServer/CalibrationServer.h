@@ -3,29 +3,39 @@
 #include <mutex>  
 #include "CalibrationService.grpc.pb.h"
 #include <grpc++/grpc++.h>
+#include <vector>
+#include <string>
+#include <opencv2/core.hpp>
+#include <opencv2/core/utility.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/calib3d.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/videoio.hpp>
+#include <opencv2/highgui.hpp>
+
 
 class CalibrationServer final : public calibration_grpc::CalibrationService::Service {
 
 public:
-  explicit CalibrationServer(int serverAddr, unsigned int maxClients);
+  explicit CalibrationServer(std::string serverAddr, unsigned int maxClients);
   ~CalibrationServer();
 
   void RunServer();
   grpc::Status calibrate(grpc::ServerContext *context,
-                         const calibration_grpc::Images *request,
+                         grpc::ServerReader<calibration_grpc::Image> *request,
                          calibration_grpc::CameraMatrix *response);
 private:
-  std::vector<double> runCalibrationAndSave(Size imageSize, Mat& cameraMatrix, Mat& distCoeffs,
-                                            vector<vector<Point2f> > imagePoints);
-  bool runCalibration( Size& imageSize, Mat& cameraMatrix, Mat& distt& distCoeffs,
-                       vector<vector<Point2f> > imagePoints, vector<Mat>& rvecs, 
-                       vector<Mat>&tvecs, vector<float>& reprojErrs,  double& totalAvgErr);
-  void calcBoardCornerPositions(vector<Point3f>& corners);
-  double computeReprojectionErrors( const vector<vector<Point3f> >& objectPoints,
-                                    const vector<vector<Point2f> >& imagePoints,
-                                    const vector<Mat>& rvecs, const vector<Mat>& tvecs,
-                                    const Mat& cameraMatrix , const Mat& distCoeffs,
-                                    vector<float>& perViewErrors);
+  bool runCalibrationAndSave(cv::Size imageSize, cv::Mat& cameraMatrix, cv::Mat& distCoeffs,
+                                            std::vector<std::vector<cv::Point2f> > imagePoints);
+  bool runCalibration( cv::Size& imageSize, cv::Mat& cameraMatrix, cv::Mat& distCoeffs,
+                       std::vector<std::vector<cv::Point2f> > imagePoints, std::vector<cv::Mat>& rvecs, 
+                       std::vector<cv::Mat>&tvecs, std::vector<float>& reprojErrs,  double& totalAvgErr);
+  void calcBoardCornerPositions(std::vector<cv::Point3f>& corners);
+  double computeReprojectionErrors( const std::vector<std::vector<cv::Point3f> >& objectPoints,
+                                    const std::vector<std::vector<cv::Point2f> >& imagePoints,
+                                    const std::vector<cv::Mat>& rvecs, const std::vector<cv::Mat>& tvecs,
+                                    const cv::Mat& cameraMatrix , const cv::Mat& distCoeffs,
+                                    std::vector<float>& perViewErrors);
 private:
   std::string _serverAddress;
   std::atomic<unsigned int> _numClients;
