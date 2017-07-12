@@ -12,6 +12,10 @@ service CalibrationService{
 message Image {
   bytes image = 1;
   string phoneModel = 2;
+  string messageType = 3;
+  uint32 captureWidth = 4;
+  uint32 captureHeight = 5;
+  string deviceId = 6;
 }
 
 message CameraMatrix {

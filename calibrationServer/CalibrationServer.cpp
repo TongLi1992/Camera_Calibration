@@ -4,15 +4,21 @@
 #include <string>
 #include <ctime>
 #include <cstdio>
+#include <fstream>
+#include <vector>
+#include <iterator>
+
 
 #define BOARD_HEIGHT 9
 #define BOARD_WIDTH 6
 #define SQUARE_SIZE 0.025
 #define ASPECT_RATIO 1
-CalibrationServer::CalibrationServer(std::string serverAddr, unsigned int maxClients) {
+CalibrationServer::CalibrationServer(std::string serverAddr,std::string fileWithID, std::string fileWithoutID, unsigned int maxClients) {
   _serverAddress = serverAddr;
   _maxClients = maxClients;
   _numClients = 0;
+  _recordFileWithID = fileWithID; 
+  _recordFileWithoutID = fileWithoutID;
 }
 
 
@@ -21,6 +27,8 @@ CalibrationServer::~CalibrationServer() {
   _numClients = 0;
   _serverAddress = "";
   _maxClients = 0;
+  _recordFileWithID = "";
+  _recordFileWithoutID = "";
 }
 
 void CalibrationServer::RunServer() {
@@ -50,30 +58,51 @@ grpc::Status CalibrationServer::calibrate(grpc::ServerContext *context,
     }
     this->_numClients++;
   }
-
   std::vector<std::vector<cv::Point2f> > imagePoints;
   cv::Mat cameraMatrix, distCoeffs;
   cv::Size imageSize;
   calibration_grpc::Image nextImage;
   while(request->Read(&nextImage)){
-    std::vector<uchar> data(nextImage.image().begin(), nextImage.image().end());
-    assert(data.size() > 0);
-    bool copyData = false;
-    cv::Mat view = imdecode(cv::Mat(data, copyData), cv::IMREAD_GRAYSCALE);
-    //imwrite("image"+std::to_string(i) +".jpg", view);
-    imageSize = view.size();
-    
-    //find_pattern
-    std::vector<cv::Point2f> pointBuf;
-    bool found;
-    int chessBoardFlags = cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE;
-    chessBoardFlags |= cv::CALIB_CB_FAST_CHECK;
-    found = findChessboardCorners( view, cv::Size(BOARD_WIDTH, BOARD_HEIGHT), pointBuf, chessBoardFlags);
-    if ( found) {
-      cornerSubPix( view, pointBuf, cv::Size(11,11),
-        cv::Size(-1,-1), cv::TermCriteria( cv::TermCriteria::EPS+cv::TermCriteria::COUNT, 30, 0.1 ));
-      imagePoints.push_back(pointBuf);
+    std::cout<<nextImage.messagetype()<<"\n";
+    if(nextImage.messagetype() == "QUERY") {
+      std::cout<<"Inside QUERY\n";
+      std::map<std::string,double> cameraMatrixMap;
+      std::cout<<"1\n";
+      bool found = searchInDB(nextImage.phonemodel(),nextImage.deviceid(), nextImage.capturewidth(), nextImage.captureheight() , cameraMatrixMap);
+      std::cout<<"2\n";
+      if(found) {
+        response->set_fx(cameraMatrixMap.find("fx")->second);
+        response->set_fy(cameraMatrixMap.find("fy")->second);
+        response->set_cx(cameraMatrixMap.find("cx")->second);
+        response->set_cy(cameraMatrixMap.find("cy")->second);
+        response->set_resultmessage("Succeed");
+      } else {
+        response->set_resultmessage("Model did not found");
+      }
+      this->_numClients--;  
+      return grpc::Status::OK;
+    } else {
+      //In calibration mode
+      std::vector<uchar> data(nextImage.image().begin(), nextImage.image().end());
+      assert(data.size() > 0);
+      bool copyData = false;
+      cv::Mat view = imdecode(cv::Mat(data, copyData), cv::IMREAD_GRAYSCALE);
+      //imwrite("image"+std::to_string(i) +".jpg", view);
+      imageSize = view.size();
+      
+      //find_pattern
+      std::vector<cv::Point2f> pointBuf;
+      bool found;
+      int chessBoardFlags = cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE;
+      chessBoardFlags |= cv::CALIB_CB_FAST_CHECK;
+      found = findChessboardCorners( view, cv::Size(BOARD_WIDTH, BOARD_HEIGHT), pointBuf, chessBoardFlags);
+      if ( found) {
+        cornerSubPix( view, pointBuf, cv::Size(11,11),
+          cv::Size(-1,-1), cv::TermCriteria( cv::TermCriteria::EPS+cv::TermCriteria::COUNT, 30, 0.1 ));
+        imagePoints.push_back(pointBuf);
+      }
     }
+   
   }
   /*std::cout<<"ImagePoints length is "<<imagePoints.size()<<std::endl;
   for(int k = 0; k < imagePoints.size(); k++) {
@@ -83,11 +112,20 @@ grpc::Status CalibrationServer::calibrate(grpc::ServerContext *context,
     }
     std::cout<<std::endl;
   }*/
-  runCalibrationAndSave(imageSize,  cameraMatrix, distCoeffs, imagePoints);
+  try {
+    runCalibrationAndSave(imageSize,  cameraMatrix, distCoeffs, imagePoints);
+  } catch(cv::Exception e) {
+    response->set_resultmessage("Invalid");
+    this->_numClients--;
+    return grpc::Status::OK;
+  }
+  saveToRecords(nextImage.phonemodel(),nextImage.deviceid(), nextImage.capturewidth(), nextImage.captureheight(),
+                cameraMatrix.at<double>(0,0), cameraMatrix.at<double>(1,1), cameraMatrix.at<double>(0,2), cameraMatrix.at<double>(1,2));
   response->set_fx(cameraMatrix.at<double>(0,0));
   response->set_fy(cameraMatrix.at<double>(1,1));
   response->set_cx(cameraMatrix.at<double>(0,2));
   response->set_cy(cameraMatrix.at<double>(1,2));
+  response->set_resultmessage("Succeed");
   this->_numClients--;  
   return grpc::Status::OK;
 }
@@ -138,7 +176,7 @@ double CalibrationServer::computeReprojectionErrors( const std::vector<std::vect
                                          const std::vector<cv::Mat>& rvecs, const std::vector<cv::Mat>& tvecs,
                                          const cv::Mat& cameraMatrix , const cv::Mat& distCoeffs,
                                          std::vector<float>& perViewErrors) {
-    std::vector<cv::Point2f> imagePoints2;
+  std::vector<cv::Point2f> imagePoints2;
   size_t totalPoints = 0;
   double totalErr = 0, err;
   perViewErrors.resize(objectPoints.size());
@@ -151,4 +189,118 @@ double CalibrationServer::computeReprojectionErrors( const std::vector<std::vect
     totalPoints     += n;
   }
   return std::sqrt(totalErr/totalPoints);
+}
+
+bool CalibrationServer::searchInDB(std::string model, std::string deviceId, int captureWidth, int captureHeight,  std::map<std::string,double> &cameraMatrix) {
+  std::ifstream fin(_recordFileWithID);
+  std::cout<<"1.1\n";
+  if(!fin) {
+    std::cout<<"_recordFileWithID opening failed\n";
+    return false;
+  }
+  std::cout<<"1.2\n";
+  while(!fin.eof()) {
+      std::cout<<"1.2.1\n";
+    std::string line;
+    std::getline(fin, line);
+    if(line.length() <= 1) {
+      break;
+    }
+    std::cout<<"1.2.2\n";
+    std::vector<std::string> tokens = split(line, ',');
+    std::cout<<"1.2.3\n";
+    if (model == tokens[0] && deviceId == tokens[1] && 
+        std::to_string(captureWidth) == tokens[2] &&
+        std::to_string(captureHeight) == tokens[3]) {
+        std::cout<<"1.2.3\n";
+        std::pair<std::string,double>("fx",std::stod(tokens[4]));
+        std::cout<<"1.2.4\n";
+        cameraMatrix.insert(std::pair<std::string,double>("fx",std::stod(tokens[4])));
+        std::cout<<"1.2.4\n";
+      cameraMatrix.insert(std::pair<std::string,double>("fy",std::stod(tokens[5])));
+      cameraMatrix.insert(std::pair<std::string,double>("cx",std::stod(tokens[6])));
+      cameraMatrix.insert(std::pair<std::string,double>("cy",std::stod(tokens[7])));
+      fin.close();
+      return true;
+    }
+  }
+  std::cout<<"1.3\n";
+  fin.close();
+  fin.open(_recordFileWithoutID);
+  if(!fin) {
+    std::cout<<"_recordFileWithoutID opening failed\n";
+    return false;
+  }
+  std::cout<<"1.4\n";
+  while(!fin.eof()) {
+    std::string line;
+    std::getline(fin, line);
+    if(line.length() <= 1) {
+      break;
+    }
+    std::vector<std::string> tokens = split(line, ',');
+    std::cout<<"model = " <<model<<"\n";
+    std::cout<<"token0 = " <<tokens[0]<<"\n";
+    if (model == tokens[0] && 
+        std::to_string(captureWidth) == tokens[1] &&
+        std::to_string(captureHeight) == tokens[2]) {
+      std::cout<<"1.4.1\n";
+      cameraMatrix.insert(std::pair<std::string,double>("fx",std::stod(tokens[3])));
+      cameraMatrix.insert(std::pair<std::string,double>("fy",std::stod(tokens[4])));
+      cameraMatrix.insert(std::pair<std::string,double>("cx",std::stod(tokens[5])));
+      cameraMatrix.insert(std::pair<std::string,double>("cy",std::stod(tokens[6])));
+      fin.close();
+      return true;
+    }
+  }
+  std::cout<<"1.5\n";
+  fin.close();
+  return false;
+
+  // fout<<model<<","<<deviceId<<","<<captureWidth<<","<<captureHeight<<","<<"1 2 3 4\n";
+}
+
+std::vector<std::string> CalibrationServer::split(const std::string &s, char delim) {
+  std::vector<std::string> result;
+  std::stringstream ss;
+  ss.str(s);
+  std::string item;
+  while (std::getline(ss, item, delim)) {
+    result.push_back(item);
+  }
+  return result;
+}
+
+void CalibrationServer::saveToRecords(std::string model, std::string deviceId, int captureWidth, int captureHeight, double fx, double fy, double cx, double cy) {
+    std::ofstream fout_withId(_recordFileWithID, std::ios::app);
+  fout_withId<<model<<","<<deviceId<<","<<captureWidth<<","<<captureHeight<<","<<fx<<","<<fy<<","<<cx<<","<<cy<<"\n";
+  fout_withId.close();
+  std::ifstream fin(_recordFileWithoutID);
+  if(!fin) {
+    std::cout<<"_recordFileWithoutID opening failed";
+  }
+  std::vector<std::string> lines;
+  std::string line;
+  bool found = false;
+  while(getline(fin, line)){
+    std::vector<std::string> tokens = split(line, ',');
+    if(tokens[0] == model && tokens[1] == std::to_string(captureWidth) && tokens[2] == std::to_string(captureHeight)) {
+      found = true;
+      int count = std::stoi(tokens[7]);
+      double newFx = (count * std::stoi(tokens[3]) + fx)/(count + 1);
+      double newFy = (count * std::stoi(tokens[4]) + fy)/(count + 1);
+      double newCx = (count * std::stoi(tokens[5]) + cx)/(count + 1);
+      double newCy = (count * std::stoi(tokens[6]) + cy)/(count + 1);
+      line = model + "," + std::to_string(captureWidth) + "," + std::to_string(captureHeight) + "," + std::to_string(newFx) + "," + std::to_string(newFy) + "," +  std::to_string(newCx) + "," +  std::to_string(newCy) + "," +  std::to_string(count+1);
+    }
+    lines.push_back(line);
+  }
+  std::ofstream fout_withoutID(_recordFileWithoutID);
+  for(auto l : lines) {
+    fout_withoutID << l <<"\n";
+  }
+  if(!found) {
+    fout_withoutID<<model<<","<<captureWidth<<","<<captureHeight<<","<<fx<<","<<fy<<","<<cx<<","<<cy<<","<<"1\n";
+  }
+  fout_withoutID.close();
 }
