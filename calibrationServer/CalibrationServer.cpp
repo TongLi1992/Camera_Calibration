@@ -67,9 +67,7 @@ grpc::Status CalibrationServer::calibrate(grpc::ServerContext *context,
     if(nextImage.messagetype() == "QUERY") {
       std::cout<<"Inside QUERY\n";
       std::map<std::string,double> cameraMatrixMap;
-      std::cout<<"1\n";
       bool found = searchInDB(nextImage.phonemodel(),nextImage.deviceid(), nextImage.capturewidth(), nextImage.captureheight() , cameraMatrixMap);
-      std::cout<<"2\n";
       if(found) {
         response->set_fx(cameraMatrixMap.find("fx")->second);
         response->set_fy(cameraMatrixMap.find("fy")->second);
@@ -82,7 +80,6 @@ grpc::Status CalibrationServer::calibrate(grpc::ServerContext *context,
       this->_numClients--;  
       return grpc::Status::OK;
     } else {
-      //In calibration mode
       std::vector<uchar> data(nextImage.image().begin(), nextImage.image().end());
       assert(data.size() > 0);
       bool copyData = false;
@@ -119,8 +116,6 @@ grpc::Status CalibrationServer::calibrate(grpc::ServerContext *context,
     this->_numClients--;
     return grpc::Status::OK;
   }
-  saveToRecords(nextImage.phonemodel(),nextImage.deviceid(), nextImage.capturewidth(), nextImage.captureheight(),
-                cameraMatrix.at<double>(0,0), cameraMatrix.at<double>(1,1), cameraMatrix.at<double>(0,2), cameraMatrix.at<double>(1,2));
   response->set_fx(cameraMatrix.at<double>(0,0));
   response->set_fy(cameraMatrix.at<double>(1,1));
   response->set_cx(cameraMatrix.at<double>(0,2));
@@ -193,30 +188,18 @@ double CalibrationServer::computeReprojectionErrors( const std::vector<std::vect
 
 bool CalibrationServer::searchInDB(std::string model, std::string deviceId, int captureWidth, int captureHeight,  std::map<std::string,double> &cameraMatrix) {
   std::ifstream fin(_recordFileWithID);
-  std::cout<<"1.1\n";
   if(!fin) {
     std::cout<<"_recordFileWithID opening failed\n";
     return false;
   }
-  std::cout<<"1.2\n";
   while(!fin.eof()) {
-      std::cout<<"1.2.1\n";
     std::string line;
     std::getline(fin, line);
-    if(line.length() <= 1) {
-      break;
-    }
-    std::cout<<"1.2.2\n";
     std::vector<std::string> tokens = split(line, ',');
-    std::cout<<"1.2.3\n";
     if (model == tokens[0] && deviceId == tokens[1] && 
         std::to_string(captureWidth) == tokens[2] &&
         std::to_string(captureHeight) == tokens[3]) {
-        std::cout<<"1.2.3\n";
-        std::pair<std::string,double>("fx",std::stod(tokens[4]));
-        std::cout<<"1.2.4\n";
-        cameraMatrix.insert(std::pair<std::string,double>("fx",std::stod(tokens[4])));
-        std::cout<<"1.2.4\n";
+      cameraMatrix.insert(std::pair<std::string,double>("fx",std::stod(tokens[4])));
       cameraMatrix.insert(std::pair<std::string,double>("fy",std::stod(tokens[5])));
       cameraMatrix.insert(std::pair<std::string,double>("cx",std::stod(tokens[6])));
       cameraMatrix.insert(std::pair<std::string,double>("cy",std::stod(tokens[7])));
@@ -224,27 +207,19 @@ bool CalibrationServer::searchInDB(std::string model, std::string deviceId, int 
       return true;
     }
   }
-  std::cout<<"1.3\n";
   fin.close();
   fin.open(_recordFileWithoutID);
   if(!fin) {
     std::cout<<"_recordFileWithoutID opening failed\n";
     return false;
   }
-  std::cout<<"1.4\n";
   while(!fin.eof()) {
     std::string line;
     std::getline(fin, line);
-    if(line.length() <= 1) {
-      break;
-    }
     std::vector<std::string> tokens = split(line, ',');
-    std::cout<<"model = " <<model<<"\n";
-    std::cout<<"token0 = " <<tokens[0]<<"\n";
     if (model == tokens[0] && 
         std::to_string(captureWidth) == tokens[1] &&
         std::to_string(captureHeight) == tokens[2]) {
-      std::cout<<"1.4.1\n";
       cameraMatrix.insert(std::pair<std::string,double>("fx",std::stod(tokens[3])));
       cameraMatrix.insert(std::pair<std::string,double>("fy",std::stod(tokens[4])));
       cameraMatrix.insert(std::pair<std::string,double>("cx",std::stod(tokens[5])));
@@ -253,7 +228,6 @@ bool CalibrationServer::searchInDB(std::string model, std::string deviceId, int 
       return true;
     }
   }
-  std::cout<<"1.5\n";
   fin.close();
   return false;
 
@@ -271,36 +245,3 @@ std::vector<std::string> CalibrationServer::split(const std::string &s, char del
   return result;
 }
 
-void CalibrationServer::saveToRecords(std::string model, std::string deviceId, int captureWidth, int captureHeight, double fx, double fy, double cx, double cy) {
-    std::ofstream fout_withId(_recordFileWithID, std::ios::app);
-  fout_withId<<model<<","<<deviceId<<","<<captureWidth<<","<<captureHeight<<","<<fx<<","<<fy<<","<<cx<<","<<cy<<"\n";
-  fout_withId.close();
-  std::ifstream fin(_recordFileWithoutID);
-  if(!fin) {
-    std::cout<<"_recordFileWithoutID opening failed";
-  }
-  std::vector<std::string> lines;
-  std::string line;
-  bool found = false;
-  while(getline(fin, line)){
-    std::vector<std::string> tokens = split(line, ',');
-    if(tokens[0] == model && tokens[1] == std::to_string(captureWidth) && tokens[2] == std::to_string(captureHeight)) {
-      found = true;
-      int count = std::stoi(tokens[7]);
-      double newFx = (count * std::stoi(tokens[3]) + fx)/(count + 1);
-      double newFy = (count * std::stoi(tokens[4]) + fy)/(count + 1);
-      double newCx = (count * std::stoi(tokens[5]) + cx)/(count + 1);
-      double newCy = (count * std::stoi(tokens[6]) + cy)/(count + 1);
-      line = model + "," + std::to_string(captureWidth) + "," + std::to_string(captureHeight) + "," + std::to_string(newFx) + "," + std::to_string(newFy) + "," +  std::to_string(newCx) + "," +  std::to_string(newCy) + "," +  std::to_string(count+1);
-    }
-    lines.push_back(line);
-  }
-  std::ofstream fout_withoutID(_recordFileWithoutID);
-  for(auto l : lines) {
-    fout_withoutID << l <<"\n";
-  }
-  if(!found) {
-    fout_withoutID<<model<<","<<captureWidth<<","<<captureHeight<<","<<fx<<","<<fy<<","<<cx<<","<<cy<<","<<"1\n";
-  }
-  fout_withoutID.close();
-}
