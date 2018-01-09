@@ -195,14 +195,17 @@ bool CalibrationServer::searchInDB(std::string model, std::string deviceId, int 
   while(!fin.eof()) {
     std::string line;
     std::getline(fin, line);
+    if(line.length() < 3) {
+      break;
+    }
     std::vector<std::string> tokens = split(line, ',');
     if (model == tokens[0] && deviceId == tokens[1] && 
         std::to_string(captureWidth) == tokens[2] &&
         std::to_string(captureHeight) == tokens[3]) {
-      cameraMatrix.insert(std::pair<std::string,double>("fx",std::stod(tokens[4])));
-      cameraMatrix.insert(std::pair<std::string,double>("fy",std::stod(tokens[5])));
-      cameraMatrix.insert(std::pair<std::string,double>("cx",std::stod(tokens[6])));
-      cameraMatrix.insert(std::pair<std::string,double>("cy",std::stod(tokens[7])));
+      cameraMatrix.insert(std::pair<std::string,float>("fx",std::stod(tokens[4])));
+      cameraMatrix.insert(std::pair<std::string,float>("fy",std::stod(tokens[5])));
+      cameraMatrix.insert(std::pair<std::string,float>("cx",std::stod(tokens[6])));
+      cameraMatrix.insert(std::pair<std::string,float>("cy",std::stod(tokens[7])));
       fin.close();
       return true;
     }
@@ -216,21 +219,23 @@ bool CalibrationServer::searchInDB(std::string model, std::string deviceId, int 
   while(!fin.eof()) {
     std::string line;
     std::getline(fin, line);
+    if(line.length() < 3) {
+        break;
+    }
     std::vector<std::string> tokens = split(line, ',');
     if (model == tokens[0] && 
         std::to_string(captureWidth) == tokens[1] &&
         std::to_string(captureHeight) == tokens[2]) {
-      cameraMatrix.insert(std::pair<std::string,double>("fx",std::stod(tokens[3])));
-      cameraMatrix.insert(std::pair<std::string,double>("fy",std::stod(tokens[4])));
-      cameraMatrix.insert(std::pair<std::string,double>("cx",std::stod(tokens[5])));
-      cameraMatrix.insert(std::pair<std::string,double>("cy",std::stod(tokens[6])));
+      cameraMatrix.insert(std::pair<std::string,float>("fx",std::stod(tokens[3])));
+      cameraMatrix.insert(std::pair<std::string,float>("fy",std::stod(tokens[4])));
+      cameraMatrix.insert(std::pair<std::string,float>("cx",std::stod(tokens[5])));
+      cameraMatrix.insert(std::pair<std::string,float>("cy",std::stod(tokens[6])));
       fin.close();
       return true;
     }
   }
   fin.close();
   return false;
-
   // fout<<model<<","<<deviceId<<","<<captureWidth<<","<<captureHeight<<","<<"1 2 3 4\n";
 }
 
